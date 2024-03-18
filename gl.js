@@ -18,21 +18,41 @@ var currProj = 'perspective';
 var currResolution = 2048;
 var displayShadowmap = false;
 
+function multiplyVecByScalar(vec, scalar) {
+    return [vec[0] * scalar, vec[1] * scalar, vec[2] * scalar];
+}
+
 /*
     FBO
 */
 class FBO {
     constructor(size) {
-        // TODO: Create FBO and texture with size
+        this.size = size;
+        this.fbo = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
+        this.texture = createTexture2D(gl, size, size, gl.RGBA, 0, gl.RGBA, gl.UNSIGNED_BYTE, null, gl.LINEAR, gl.LINEAR, gl.CLAMP_TO_EDGE, gl.CLAMP_TO_EDGE);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.texture, 0);
+        this.rbo = gl.createRenderbuffer();
+        gl.bindRenderbuffer(gl.RENDERBUFFER, this.rbo);
+        gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, size, size);
+        gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, this.rbo);
+        if(gl.checkFramebufferStatus(gl.FRAMEBUFFER) != gl.FRAMEBUFFER_COMPLETE) {
+            console.error("Framebuffer not complete");
+        }
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.bindRenderbuffer(gl.RENDERBUFFER, null);
     }
-
+    
     start() {
-        // TODO: Bind FBO, set viewport to size, clear depth buffer
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
+        gl.viewport(0, 0, this.size, this.size);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     }
-
+    
     stop() {
-        // TODO: unbind FBO
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     }
+    
 }
 
 /*
@@ -57,8 +77,8 @@ class ShadowMapProgram {
     }
 
     use() {
-        // TODO: use program
-    }
+        gl.useProgram(this.program);
+    }    
 }
 
 /*
@@ -72,12 +92,25 @@ class RenderToScreenProgram {
         this.program = createProgram(gl, this.vertexShader, this.fragmentShader);
         this.posAttribLoc = gl.getAttribLocation(this.program, "position");
         this.samplerLoc = gl.getUniformLocation(this.program, "uSampler");
+        this.quadVBO = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.quadVBO);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+        this.quadVAO = gl.createVertexArray();
+        gl.bindVertexArray(this.quadVAO);
+        gl.enableVertexAttribArray(this.posAttribLoc);
+        gl.vertexAttribPointer(this.posAttribLoc, 2, gl.FLOAT, false, 0, 0);
 
-        // TODO: Create quad VBO and VAO
+       
+        
     }
 
     draw(texture) {
-        // TODO: Render quad and display texture
+        gl.useProgram(this.program);
+        gl.bindVertexArray(this.quadVAO);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.uniform1i(this.samplerLoc, 0);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     }
 
 }
@@ -168,10 +201,7 @@ class Layer {
         this.color = color;
         this.normals = normals;
 
-        this.hasNormals = false;
-        if(this.normals) {
-            this.hasNormals = true;
-        }
+        this.hasNormals = normals !== null;
     }
 
     init() {
@@ -181,19 +211,39 @@ class Layer {
         this.vertexBuffer = createBuffer(gl, gl.ARRAY_BUFFER, new Float32Array(this.vertices));
         this.indexBuffer = createBuffer(gl, gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(this.indices));
 
-        if(this.normals) {
+        if (this.hasNormals) {
             this.normalBuffer = createBuffer(gl, gl.ARRAY_BUFFER, new Float32Array(this.normals));
-            this.vao = createVAO(gl, 0, this.vertexBuffer, 1, this.normalBuffer);
-        }
-        else {
-            this.vao = createVAO(gl, 0, this.vertexBuffer);
+            // Ensure createVAO can handle normals correctly, you might need to adjust it based on your implementation
+            this.vao = createVAO(gl, this.layerProgram.posAttribLoc, this.vertexBuffer, this.layerProgram.normalsAttribLoc, this.normalBuffer);
+        } else {
+            this.vao = createVAO(gl, this.layerProgram.posAttribLoc, this.vertexBuffer);
         }
     }
 
     draw(modelMatrix, viewMatrix, projectionMatrix, lightViewMatrix, lightProjectionMatrix, shadowPass = false, texture = null) {
-        // TODO: Handle shadow pass (using ShadowMapProgram) and regular pass (using LayerProgram)
+        let program = shadowPass ? this.shadowProgram : this.layerProgram;
+        gl.useProgram(program.program);
+
+        // Convert matrices to Float32Array if not already
+        gl.uniformMatrix4fv(program.modelLoc, false, new Float32Array(modelMatrix));
+        gl.uniformMatrix4fv(program.viewLoc, false, new Float32Array(viewMatrix));
+        gl.uniformMatrix4fv(program.projectionLoc, false, new Float32Array(projectionMatrix));
+        gl.uniform4fv(program.colorAttribLoc, new Float32Array(this.color));
+
+        if (shadowPass && this.hasNormals) {
+            gl.uniformMatrix4fv(program.lightViewLoc, false, new Float32Array(lightViewMatrix));
+            gl.uniformMatrix4fv(program.lightProjectionLoc, false, new Float32Array(lightProjectionMatrix));
+        }
+
+        gl.bindVertexArray(this.vao);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
+        gl.drawElements(gl.TRIANGLES, this.indices.length, gl.UNSIGNED_INT, 0);
+
+        gl.bindVertexArray(null);
     }
 }
+
+
 
 /*
     Event handlers
@@ -237,52 +287,66 @@ window.handleFile = function(e) {
     Update transformation matrices
 */
 function updateModelMatrix(centroid) {
-    return identityMatrix();
+    var translate = translateMatrix(-centroid[0], -centroid[1], -centroid[2]);
+    var rotate = rotateYMatrix(currRotate * Math.PI / 180);
+    return multiplyMatrices(translate, rotate);
 }
 
 function updateProjectionMatrix() {
-    // TODO: Projection matrix
-    var projectionMatrix = identityMatrix();
-    return projectionMatrix;
+    if(currProj === 'perspective') {
+        return perspectiveMatrix(45 * Math.PI / 180, gl.canvas.clientWidth / gl.canvas.clientHeight, 0.1, 100.0);
+    } else {
+        return orthographicMatrix(-1, 1, -1, 1, 0.1, 100);
+    }
 }
 
 function updateViewMatrix(centroid){
-    // TODO: View matrix
-    var viewMatrix = identityMatrix();
-    return viewMatrix;
+    var initialCameraPosition = [0, 0, 2];
+    var lookAtCenter = add(centroid, [0, 0, -1]);
+    return lookAt(initialCameraPosition, lookAtCenter, [0, 1, 0]);
 }
 
 function updateLightViewMatrix(centroid) {
-    // TODO: Light view matrix
-    var lightViewMatrix = identityMatrix();
-    return lightViewMatrix;
+    var lightDirectionNormalized = normalize([Math.sin(currLightRotate * Math.PI / 180), -1, Math.cos(currLightRotate * Math.PI / 180)]);
+    var lightPosition = sub(centroid, multiplyVecByScalar(lightDirectionNormalized, 10));
+    var lookAtCenter = centroid;
+    return lookAt(lightPosition, lookAtCenter, [0, 1, 0]);
 }
 
 function updateLightProjectionMatrix() {
-    // TODO: Light projection matrix
-    var lightProjectionMatrix = identityMatrix();
-    return lightProjectionMatrix;
+    return orthographicMatrix(-10, 10, -10, 10, 1, 20);
 }
+
 
 /*
     Main draw function (should call layers.draw)
 */
 function draw() {
+    var centroid = layers.getCentroid();
+    var modelMatrix = updateModelMatrix(centroid);
+    var viewMatrix = updateViewMatrix(centroid);
+    var projectionMatrix = updateProjectionMatrix();
+    var lightViewMatrix = updateLightViewMatrix(centroid);
+    var lightProjectionMatrix = updateLightProjectionMatrix();
 
+    // First rendering pass (Shadow map)
+    fbo.start();
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    layers.draw(modelMatrix, lightViewMatrix, lightProjectionMatrix, null, null, true);
+    fbo.stop();
+
+    // Clear the canvas for the second pass
     gl.clearColor(190/255, 210/255, 215/255, 1);
     gl.clearDepth(1.0);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-    // TODO: First rendering pass, rendering using FBO
-
-
-    if(!displayShadowmap) {
+    if (!displayShadowmap) {
         gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
-        // TODO: Second rendering pass, render to screen
-    }
-    else {
+        layers.draw(modelMatrix, viewMatrix, projectionMatrix, lightViewMatrix, lightProjectionMatrix, false, fbo.texture);
+    } else {
+        // Render shadowmap texture for visualization
         gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
-        // TODO: Render shadowmap texture computed in first pass
+        renderToScreen.draw(fbo.texture);
     }
 
     requestAnimationFrame(draw);

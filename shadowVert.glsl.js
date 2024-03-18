@@ -16,7 +16,15 @@ out vec4 vColor;
 out vec4 vLightSpacePos;
 
 void main() {
-    // TODO: If has normals, compute color considering it
-    // TODO: compute light space position and gl_Position
+    gl_Position = uProjection * uView * uModel * vec4(position, 1.0);
+    // Compute the position of the vertex in light space
+    vLightSpacePos = uLightProjection * uLightView * uModel * vec4(position, 1.0);
+    if (uHasNormals) {
+        // Apply lighting effect here if needed. This is a simplified placeholder.
+        vColor = vec4(normalize(normal) * 0.5 + 0.5, 1.0);
+    } else {
+        vColor = uColor;
+    }
 }
+
 `;
